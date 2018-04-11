@@ -12,7 +12,7 @@ steps:
 # Install Signing Plugin
 - task: ms-vseng.MicroBuildTasks.30666190-6959-11e5-9f96-f56098202fef.MicroBuildSigningPlugin@1
   inputs:
-    signType: real
+    signType: test
   condition: and(succeeded(), in(variables['PB_SignType'], 'test', 'real'))
 
 # Install Swix Plugin
