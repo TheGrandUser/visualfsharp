@@ -96,7 +96,7 @@ module internal NoteworthyParamInfoLocationsImpl =
     // see bug 345385.
     let rec searchSynArgExpr traverseSynExpr pos expr =
         match expr with 
-        | SynExprParen((SynExpr.Tuple(synExprList, commaRanges, _tupleRange) as synExpr), _lpRange, rpRangeOpt, parenRange) -> // tuple argument
+        | SynExprParen((SynExpr.Tuple(false, synExprList, commaRanges, _tupleRange) as synExpr), _lpRange, rpRangeOpt, parenRange) -> // tuple argument
             let inner = traverseSynExpr synExpr
             match inner with
             | None ->
@@ -108,7 +108,7 @@ module internal NoteworthyParamInfoLocationsImpl =
                     NotFound, None
             | _ -> NotFound, None
 
-        | SynExprParen(SynExprParen(SynExpr.Tuple(_, _, _), _, _, _) as synExpr, _, rpRangeOpt, parenRange) -> // f((x, y)) is special, single tuple arg
+        | SynExprParen(SynExprParen(SynExpr.Tuple(false, _, _, _), _, _, _) as synExpr, _, rpRangeOpt, parenRange) -> // f((x, y)) is special, single tuple arg
             handleSingleArg traverseSynExpr (pos, synExpr, parenRange, rpRangeOpt)
 
         // dig into multiple parens
@@ -144,17 +144,27 @@ module internal NoteworthyParamInfoLocationsImpl =
                     NotFound, Some inner
             | _ -> NotFound, Some inner
 
-
+    let (|StaticParameters|_|) pos synType =
+        match synType with
+        | SynType.App(SynType.LongIdent(LongIdentWithDots(lid, _) as lidwd), Some(openm), args, commas, closemOpt, _pf, wholem) ->
+            let lidm = lidwd.Range
+            let betweenTheBrackets = mkRange wholem.FileName openm.Start wholem.End
+            if AstTraversal.rangeContainsPosEdgesExclusive betweenTheBrackets pos && args |> List.forall isStaticArg then
+                let commasAndCloseParen = [ for c in commas -> c.End ] @ [ wholem.End ]
+                Some (FSharpNoteworthyParamInfoLocations(pathOfLid lid, lidm, openm.Start, commasAndCloseParen, closemOpt.IsSome, args |> List.map digOutIdentFromStaticArg))
+            else
+                None
+        | _ ->
+            None
 
     let traverseInput(pos, parseTree) =
-
         AstTraversal.Traverse(pos, parseTree, { new AstTraversal.AstVisitorBase<_>() with
         member this.VisitExpr(_path, traverseSynExpr, defaultTraverse, expr) =
             let expr = expr // fix debug locals
             match expr with
 
             // new LID<tyarg1, ...., tyargN>(...)  and error recovery of these
-            | SynExpr.New(_, synType, synExpr, _range) -> 
+            | SynExpr.New(_, synType, synExpr, _) -> 
                 let constrArgsResult, cacheOpt = searchSynArgExpr traverseSynExpr pos synExpr
                 match constrArgsResult, cacheOpt with
                 | Found(parenLoc, args, isThereACloseParen), _ ->
@@ -163,7 +173,9 @@ module internal NoteworthyParamInfoLocationsImpl =
                 | NotFound, Some cache ->
                     cache
                 | _ ->
-                    traverseSynExpr synExpr
+                    match synType with
+                    | StaticParameters pos loc -> Some loc
+                    | _ -> traverseSynExpr synExpr
 
             // EXPR<  = error recovery of a form of half-written TypeApp
             | SynExpr.App(_, _, SynExpr.App(_, true, SynExpr.Ident op, synExpr, openm), SynExpr.ArbitraryAfterError _, wholem) when op.idText = "op_LessThan" ->
@@ -221,18 +233,10 @@ module internal NoteworthyParamInfoLocationsImpl =
 
             | _ -> defaultTraverse expr
 
-        member this.VisitTypeAbbrev(tyAbbrevRhs, _m) =
+        member this.VisitTypeAbbrev(tyAbbrevRhs, _m) = 
             match tyAbbrevRhs with
-            | SynType.App(SynType.LongIdent(LongIdentWithDots(lid, _) as lidwd), Some(openm), args, commas, closemOpt, _pf, wholem) ->
-                let lidm = lidwd.Range
-                let betweenTheBrackets = mkRange wholem.FileName openm.Start wholem.End
-                if AstTraversal.rangeContainsPosEdgesExclusive betweenTheBrackets pos && args |> List.forall isStaticArg then
-                    let commasAndCloseParen = [ for c in commas -> c.End ] @ [ wholem.End ]
-                    Some (FSharpNoteworthyParamInfoLocations(pathOfLid lid, lidm, openm.Start, commasAndCloseParen, closemOpt.IsSome, args |> List.map digOutIdentFromStaticArg))
-                else
-                    None
-            | _ ->
-                None
+            | StaticParameters pos loc -> Some loc
+            | _ -> None
 
         member this.VisitImplicitInherit(defaultTraverse, ty, expr, m) =
             match defaultTraverse expr with

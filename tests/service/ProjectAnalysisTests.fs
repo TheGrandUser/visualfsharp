@@ -3811,6 +3811,10 @@ let ``Test Project26 parameter symbols`` () =
     let objSymbol = wholeProjectResults.GetAllUsesOfAllSymbols() |> Async.RunSynchronously |> Array.find (fun su -> su.Symbol.DisplayName = "Class")
     let objEntity = objSymbol.Symbol :?> FSharpEntity
     
+    let rec isByRef (ty: FSharpType) = 
+        if ty.IsAbbreviation then isByRef ty.AbbreviatedType 
+        else ty.IsNamedType && ty.NamedEntity.IsByRef
+
     // check we can get the CurriedParameterGroups
     let objMethodsCurriedParameterGroups = 
         [ for x in objEntity.MembersFunctionsAndValues do 
@@ -3823,14 +3827,14 @@ let ``Test Project26 parameter symbols`` () =
                             if p.IsOptionalArg then yield "optional"
                         }
                         |> String.concat ","
-                     yield x.CompiledName, p.Name,  p.Type.ToString(), attributeNames ]
+                     yield x.CompiledName, p.Name,  p.Type.ToString(), isByRef p.Type, attributeNames ]
 
     objMethodsCurriedParameterGroups |> shouldEqual 
-          [("M1", Some "arg1", "type 'c", "");
-           ("M1", Some "arg2", "type 'd Microsoft.FSharp.Core.option", "optional");
-           ("M2", Some "arg1", "type 'a", "params");
-           ("M2", Some "arg2", "type 'b", "optional");
-           ("M3", Some "arg", "type Microsoft.FSharp.Core.byref<Microsoft.FSharp.Core.int>", "out")]
+          [("M1", Some "arg1", "type 'c", false, "");
+           ("M1", Some "arg2", "type 'd Microsoft.FSharp.Core.option", false, "optional");
+           ("M2", Some "arg1", "type 'a", false, "params");
+           ("M2", Some "arg2", "type 'b", false, "optional");
+           ("M3", Some "arg", "type Microsoft.FSharp.Core.byref<Microsoft.FSharp.Core.int>", true, "out")]
 
     // check we can get the ReturnParameter
     let objMethodsReturnParameter = 
@@ -3968,8 +3972,8 @@ let ``Test project28 all symbols in signature`` () =
     xmlDocSigs
       |> shouldEqual 
             [|("FSharpEntity", "M", "T:M");
-              ("FSharpMemberOrFunctionOrValue", "( |Even|Odd| )", "M:|Even|Odd|(System.Int32)");
-              ("FSharpMemberOrFunctionOrValue", "TestNumber", "M:TestNumber(System.Int32)");
+              ("FSharpMemberOrFunctionOrValue", "( |Even|Odd| )", "M:M.|Even|Odd|(System.Int32)");
+              ("FSharpMemberOrFunctionOrValue", "TestNumber", "M:M.TestNumber(System.Int32)");
               ("FSharpEntity", "DU", "T:M.DU"); 
               ("FSharpUnionCase", "A", "T:M.DU.A");
               ("FSharpField", "A", "T:M.DU.A"); 
@@ -5044,6 +5048,101 @@ let ``Test Project40 all symbols`` () =
            ("IsItAnAMethod", ((13, 25), (13, 40)), ["member"; "funky"]);
            ("g", ((13, 4), (13, 5)), ["val"]); ("M", ((2, 7), (2, 8)), ["module"])]
 
+//--------------------------------------------
+
+module internal Project41 = 
+    open System.IO
+
+    let fileName1 = Path.ChangeExtension(Path.GetTempFileName(), ".fs")
+    // We need to us a stable name to keep the hashes stable
+    let base2 = Path.Combine(Path.GetDirectoryName(Path.GetTempFileName()), "stabletmp.tmp")
+    let dllName = Path.ChangeExtension(base2, ".dll")
+    let projFileName = Path.ChangeExtension(base2, ".fsproj")
+    let fileSource1 = """
+module M
+
+    let data1 = {| X = 1 |}
+
+    // Types can be written with the same syntax
+    let data2 : {| X : int |} = data1
+
+    type D = {| X : int |}
+
+    // Access is as expected
+    let f1 (v : {| X : int |}) = v.X
+
+    // Access is as expected
+    let f2 (v : D) = v.X
+
+    // Access can be nested
+    let f3 (v : {| X: {| X : int; Y : string |} |}) = v.X.X
+
+    """
+    File.WriteAllText(fileName1, fileSource1)
+    let fileNames = [fileName1]
+    let args = mkProjectCommandLineArgs (dllName, fileNames)
+    let options =  checker.GetProjectOptionsFromCommandLineArgs (projFileName, args)
+    let cleanFileName a = if a = fileName1 then "file1" else "??"
+
+[<Test>]
+let ``Test project41 all symbols`` () = 
+
+    let wholeProjectResults = checker.ParseAndCheckProject(Project41.options) |> Async.RunSynchronously
+    let allSymbolUses = wholeProjectResults.GetAllUsesOfAllSymbols() |> Async.RunSynchronously
+    let allSymbolUsesInfo =  
+        [ for s in allSymbolUses do
+              let pos = 
+                  match s.Symbol.DeclarationLocation with 
+                  | Some r when r.FileName = Project41.fileName1 -> r.StartLine, r.StartColumn
+                  | _ -> (0,0)
+              yield (s.Symbol.DisplayName, tups s.RangeAlternate, attribsOfSymbol s.Symbol, pos) ]
+    allSymbolUsesInfo |> shouldEqual
+          [("X", ((4, 19), (4, 20)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (4, 19));
+           ("data1", ((4, 8), (4, 13)), ["val"], (4, 8));
+           ("int", ((7, 23), (7, 26)), ["abbrev"], (0, 0));
+           ("X", ((7, 19), (7, 20)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (7, 19));
+           ("data1", ((7, 32), (7, 37)), ["val"], (4, 8));
+           ("data2", ((7, 8), (7, 13)), ["val"], (7, 8));
+           ("int", ((9, 20), (9, 23)), ["abbrev"], (0, 0));
+           ("X", ((9, 16), (9, 17)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (9, 16));
+           ("int", ((9, 20), (9, 23)), ["abbrev"], (0, 0));
+           ("X", ((9, 16), (9, 17)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (9, 16));
+           ("D", ((9, 9), (9, 10)), ["abbrev"], (9, 9));
+           ("int", ((12, 23), (12, 26)), ["abbrev"], (0, 0));
+           ("X", ((12, 19), (12, 20)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (12, 19));
+           ("v", ((12, 12), (12, 13)), [], (12, 12));
+           ("v", ((12, 33), (12, 34)), [], (12, 12));
+           ("X", ((12, 33), (12, 36)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (12, 19));
+           ("f1", ((12, 8), (12, 10)), ["val"], (12, 8));
+           ("D", ((15, 16), (15, 17)), ["abbrev"], (9, 9));
+           ("v", ((15, 12), (15, 13)), [], (15, 12));
+           ("v", ((15, 21), (15, 22)), [], (15, 12));
+           ("X", ((15, 21), (15, 24)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (9, 16));
+           ("f2", ((15, 8), (15, 10)), ["val"], (15, 8));
+           ("int", ((18, 29), (18, 32)), ["abbrev"], (0, 0));
+           ("string", ((18, 38), (18, 44)), ["abbrev"], (0, 0));
+           ("X", ((18, 25), (18, 26)),
+            ["field"; "anon(0, [//<>f__AnonymousType4026451324`2']X,Y)"], (18, 25));
+           ("Y", ((18, 34), (18, 35)),
+            ["field"; "anon(1, [//<>f__AnonymousType4026451324`2']X,Y)"], (18, 34));
+           ("X", ((18, 19), (18, 20)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (18, 19));
+           ("v", ((18, 12), (18, 13)), [], (18, 12));
+           ("v", ((18, 54), (18, 55)), [], (18, 12));
+           ("X", ((18, 56), (18, 57)),
+            ["field"; "anon(0, [//<>f__AnonymousType1416859829`1']X)"], (18, 19));
+           ("X", ((18, 54), (18, 59)),
+            ["field"; "anon(0, [//<>f__AnonymousType4026451324`2']X,Y)"], (18, 25));
+           ("f3", ((18, 8), (18, 10)), ["val"], (18, 8));
+           ("M", ((2, 7), (2, 8)), ["module"], (2, 7))]
+
 
 module internal ProjectBig = 
     open System.IO
@@ -5281,13 +5380,15 @@ let ``#4030, Incremental builder creation warnings`` (args, errorSeverities) =
 //------------------------------------------------------
 
 [<Test>]
-let ``Unused opens smoke test 1``() =
+let ``Unused opens in rec module smoke test 1``() =
 
     let fileName1 = Path.ChangeExtension(Path.GetTempFileName(), ".fs")
     let base2 = Path.GetTempFileName()
     let dllName = Path.ChangeExtension(base2, ".dll")
     let projFileName = Path.ChangeExtension(base2, ".fsproj")
     let fileSource1 = """
+module rec Module
+
 open System.Collections // unused
 open System.Collections.Generic // used, should not appear
 open FSharp.Control // unused
@@ -5343,11 +5444,83 @@ type UseTheThings(i:int) =
     let unusedOpens = UnusedOpens.getUnusedOpens (fileCheckResults, (fun i -> lines.[i-1])) |> Async.RunSynchronously
     let unusedOpensData = [ for uo in unusedOpens -> tups uo, lines.[uo.StartLine-1] ]
     let expected = 
-          [(((2, 5), (2, 23)), "open System.Collections // unused");
-           (((4, 5), (4, 19)), "open FSharp.Control // unused");
-           (((5, 5), (5, 16)), "open FSharp.Data // unused");
-           (((6, 5), (6, 25)), "open System.Globalization // unused");
-           (((23, 5), (23, 21)), "open SomeUnusedModule")]
+          [(((4, 5), (4, 23)), "open System.Collections // unused");
+           (((6, 5), (6, 19)), "open FSharp.Control // unused");
+           (((7, 5), (7, 16)), "open FSharp.Data // unused");
+           (((8, 5), (8, 25)), "open System.Globalization // unused");
+           (((25, 5), (25, 21)), "open SomeUnusedModule")]
+    unusedOpensData |> shouldEqual expected
+
+[<Test>]
+let ``Unused opens in non rec module smoke test 1``() =
+
+    let fileName1 = Path.ChangeExtension(Path.GetTempFileName(), ".fs")
+    let base2 = Path.GetTempFileName()
+    let dllName = Path.ChangeExtension(base2, ".dll")
+    let projFileName = Path.ChangeExtension(base2, ".fsproj")
+    let fileSource1 = """
+module Module
+
+open System.Collections // unused
+open System.Collections.Generic // used, should not appear
+open FSharp.Control // unused
+open FSharp.Data // unused
+open System.Globalization // unused
+
+module SomeUnusedModule = 
+    let f x  = x
+
+module SomeUsedModuleContainingFunction = 
+    let g x  = x
+
+module SomeUsedModuleContainingActivePattern = 
+    let (|ActivePattern|) x  = x
+
+module SomeUsedModuleContainingExtensionMember = 
+    type System.Int32 with member x.Q = 1
+
+module SomeUsedModuleContainingUnion = 
+    type Q = A | B
+
+open SomeUnusedModule
+open SomeUsedModuleContainingFunction
+open SomeUsedModuleContainingExtensionMember
+open SomeUsedModuleContainingActivePattern
+open SomeUsedModuleContainingUnion
+
+type UseTheThings(i:int) =
+    member x.Value = Dictionary<int,int>() // use something from System.Collections.Generic, as a constructor
+    member x.UseSomeUsedModuleContainingFunction() = g 3
+    member x.UseSomeUsedModuleContainingActivePattern(ActivePattern g) = g
+    member x.UseSomeUsedModuleContainingExtensionMember() = (3).Q
+    member x.UseSomeUsedModuleContainingUnion() = A
+"""
+    File.WriteAllText(fileName1, fileSource1)
+
+    let fileNames = [fileName1]
+    let args = mkProjectCommandLineArgs (dllName, fileNames)
+    let keepAssemblyContentsChecker = FSharpChecker.Create(keepAssemblyContents=true)
+    let options =  keepAssemblyContentsChecker.GetProjectOptionsFromCommandLineArgs (projFileName, args)
+    
+    let fileCheckResults = 
+        keepAssemblyContentsChecker.ParseAndCheckFileInProject(fileName1, 0, fileSource1, options)  |> Async.RunSynchronously
+        |> function 
+            | _, FSharpCheckFileAnswer.Succeeded(res) -> res
+            | _ -> failwithf "Parsing aborted unexpectedly..."
+    //let symbolUses = fileCheckResults.GetAllUsesOfAllSymbolsInFile() |> Async.RunSynchronously |> Array.indexed 
+    // Fragments used to check hash codes:
+    //(snd symbolUses.[42]).Symbol.IsEffectivelySameAs((snd symbolUses.[37]).Symbol)
+    //(snd symbolUses.[42]).Symbol.GetEffectivelySameAsHash()
+    //(snd symbolUses.[37]).Symbol.GetEffectivelySameAsHash()
+    let lines = File.ReadAllLines(fileName1)
+    let unusedOpens = UnusedOpens.getUnusedOpens (fileCheckResults, (fun i -> lines.[i-1])) |> Async.RunSynchronously
+    let unusedOpensData = [ for uo in unusedOpens -> tups uo, lines.[uo.StartLine-1] ]
+    let expected = 
+          [(((4, 5), (4, 23)), "open System.Collections // unused");
+           (((6, 5), (6, 19)), "open FSharp.Control // unused");
+           (((7, 5), (7, 16)), "open FSharp.Data // unused");
+           (((8, 5), (8, 25)), "open System.Globalization // unused");
+           (((25, 5), (25, 21)), "open SomeUnusedModule")]
     unusedOpensData |> shouldEqual expected
 
 [<Test>]

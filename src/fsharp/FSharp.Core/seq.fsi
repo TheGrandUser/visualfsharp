@@ -14,7 +14,7 @@ namespace Microsoft.FSharp.Collections
     [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
     module Seq = 
 
-        /// <summary>Returns a new sequence that contains the cartesian product of the two input sequences.</summary>
+        /// <summary>Returns a new sequence that contains all pairings of elements from the first and second sequences.</summary>
         /// <param name="source1">The first sequence.</param>
         /// <param name="source2">The second sequence.</param>
         /// <returns>The result sequence.</returns>
@@ -557,6 +557,16 @@ namespace Microsoft.FSharp.Collections
         /// <exception cref="System.ArgumentException">Thrown when the input does not have precisely one element.</exception>
         [<CompiledName("ExactlyOne")>]
         val exactlyOne: source:seq<'T> -> 'T
+
+        /// <summary>Returns the only element of the sequence or <c>None</c> if sequence is empty or contains more than one element.</summary>
+        ///
+        /// <param name="source">The input sequence.</param>
+        ///
+        /// <returns>The only element of the sequence or None.</returns>
+        ///
+        /// <exception cref="System.ArgumentNullException">Thrown when the input sequence is null.</exception>
+        [<CompiledName("TryExactlyOne")>]
+        val tryExactlyOne: source:seq<'T> -> 'T option
 
         /// <summary>Returns true if the sequence contains no elements, false otherwise.</summary>
         ///

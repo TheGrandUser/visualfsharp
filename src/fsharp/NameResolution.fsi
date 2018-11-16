@@ -64,6 +64,9 @@ type Item =
     /// Represents the resolution of a name to an F# record field.
     | RecdField of RecdFieldInfo
 
+    /// Represents the resolution of a name to a field of an anonymous record type.
+    | AnonRecdField of AnonRecdTypeInfo * TTypes * int * range
+
     // The following are never in the items table but are valid results of binding 
     // an identifier in different circumstances. 
 
@@ -166,8 +169,8 @@ type FullyQualifiedFlag =
 [<RequireQualifiedAccess>]
 type BulkAdd = Yes | No
 
-/// Lookup patterns in name resolution environment
-val internal TryFindPatternByName : string -> NameResolutionEnv -> Item option
+/// Find a field in anonymous record type
+val internal TryFindAnonRecdFieldOfType : TcGlobals -> TType -> string -> Item option
 
 /// Add extra items to the environment for Visual Studio, e.g. static members 
 val internal AddFakeNamedValRefToNameEnv : string -> NameResolutionEnv -> ValRef -> NameResolutionEnv
@@ -341,6 +344,13 @@ type internal OpenDeclaration =
     /// Create a new instance of OpenDeclaration.
     static member Create : longId: Ident list * modules: ModuleOrNamespaceRef list * appliedScope: range * isOwnNamespace: bool -> OpenDeclaration
     
+/// Line-end normalized source text and an array of line end positions, used for format string parsing
+type FormatStringCheckContext =
+    { /// Line-end normalized source text
+      NormalizedSource: string
+      /// Array of line end positions
+      LineEndPositions: int[] }
+
 /// An abstract type for reporting the results of name resolution and type checking
 type ITypecheckResultsSink =
 
@@ -361,6 +371,9 @@ type ITypecheckResultsSink =
 
     /// Get the current source
     abstract CurrentSource : string option
+
+    /// Cached line-end normalized source text and an array of line end positions, used for format string parsing
+    abstract FormatStringCheckContext : FormatStringCheckContext option
 
 /// An implementation of ITypecheckResultsSink to collect information during type checking
 type internal TcResultsSinkImpl =

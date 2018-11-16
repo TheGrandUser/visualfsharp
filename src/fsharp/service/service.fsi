@@ -240,6 +240,9 @@ type public FSharpCheckFileResults =
 
     member internal GetVisibleNamespacesAndModulesAtPoint : pos -> Async<Tast.ModuleOrNamespaceRef[]>
 
+    /// Find the most precise display environment for the given line and column.
+    member internal GetDisplayEnvForPos : pos : pos -> Async<DisplayEnv option>
+
     /// Determines if a long ident is resolvable at a specific point.
     /// <param name="userOpName">An optional string used for tracing compiler operations associated with this request.</param>
     member internal IsRelativeNameResolvable: cursorPos : pos * plid : string list * item: Item * ?userOpName: string -> Async<bool>
@@ -308,6 +311,9 @@ type public FSharpProjectOptions =
     { 
       // Note that this may not reduce to just the project directory, because there may be two projects in the same directory.
       ProjectFileName: string
+
+      /// This is the unique identifier for the project, it is case sensitive. If it's None, will key off of ProjectFileName in our caching.
+      ProjectId: string option
 
       /// The files in the project
       SourceFiles: string[]
@@ -705,7 +711,7 @@ type public FSharpChecker =
     member internal ReferenceResolver : ReferenceResolver.Resolver
 
     /// Tokenize a single line, returning token information and a tokenization state represented by an integer
-    member TokenizeLine: line:string * state:int64 -> FSharpTokenInfo [] * int64
+    member TokenizeLine: line:string * state:FSharpTokenizerLexState-> FSharpTokenInfo [] * FSharpTokenizerLexState
 
     /// Tokenize an entire file, line by line
     member TokenizeFile: source:string -> FSharpTokenInfo [] []

@@ -275,10 +275,12 @@ type CompletionItemKind =
     | Method of isExtension : bool
     | Event
     | Argument
+    | CustomOperation
     | Other
 
 type UnresolvedSymbol =
-    { DisplayName: string
+    { FullName: string
+      DisplayName: string
       Namespace: string[] }
 
 type CompletionItem =
@@ -294,8 +296,8 @@ type CompletionItem =
 [<AutoOpen>]
 module internal SymbolHelpers = 
 
-    let isFunction g typ =
-        let _, tau = tryDestForallTy g typ
+    let isFunction g ty =
+        let _, tau = tryDestForallTy g ty
         isFunTy g tau 
 
     let OutputFullName isListItem ppF fnF r = 
@@ -359,11 +361,12 @@ module internal SymbolHelpers =
         | Item.UnionCase(ucinfo, _)     -> Some (rangeOfUnionCaseInfo preferFlag ucinfo)
         | Item.ActivePatternCase apref -> Some (rangeOfValRef preferFlag apref.ActivePatternVal)
         | Item.ExnCase tcref           -> Some tcref.Range
+        | Item.AnonRecdField (_,_,_,m) -> Some m
         | Item.RecdField rfinfo        -> Some (rangeOfRecdFieldInfo preferFlag rfinfo)
         | Item.Event einfo             -> rangeOfEventInfo preferFlag einfo
         | Item.ILField _               -> None
         | Item.Property(_, pinfos)      -> rangeOfPropInfo preferFlag pinfos.Head 
-        | Item.Types(_, typs)     -> typs |> List.tryPick (tryNiceEntityRefOfTy >> Option.map (rangeOfEntityRef preferFlag))
+        | Item.Types(_, tys)     -> tys |> List.tryPick (tryNiceEntityRefOfTyOption >> Option.map (rangeOfEntityRef preferFlag))
         | Item.CustomOperation (_, _, Some minfo)  -> rangeOfMethInfo g preferFlag minfo
         | Item.TypeVar (_, tp)  -> Some tp.Range
         | Item.ModuleOrNamespaces(modrefs) -> modrefs |> List.tryPick (rangeOfEntityRef preferFlag >> Some)
@@ -376,8 +379,8 @@ module internal SymbolHelpers =
         | Item.ImplicitOp (_, {contents = Some(TraitConstraintSln.FSMethSln(_, vref, _))}) -> Some vref.Range
         | Item.ImplicitOp _ -> None
         | Item.UnqualifiedType tcrefs -> tcrefs |> List.tryPick (rangeOfEntityRef preferFlag >> Some)
-        | Item.DelegateCtor typ 
-        | Item.FakeInterfaceCtor typ -> typ |> tryNiceEntityRefOfTy |> Option.map (rangeOfEntityRef preferFlag)
+        | Item.DelegateCtor ty 
+        | Item.FakeInterfaceCtor ty -> ty |> tryNiceEntityRefOfTyOption |> Option.map (rangeOfEntityRef preferFlag)
         | Item.NewDef _ -> None
 
     // Provided type definitions do not have a useful F# CCU for the purposes of goto-definition.
@@ -417,7 +420,7 @@ module internal SymbolHelpers =
         | Item.CtorGroup(_, minfos) -> minfos |> List.tryPick (ccuOfMethInfo g)
         | Item.CustomOperation (_, _, Some minfo)       -> ccuOfMethInfo g minfo
 
-        | Item.Types(_, typs)             -> typs |> List.tryPick (tryNiceEntityRefOfTy >> Option.bind computeCcuOfTyconRef)
+        | Item.Types(_, tys)             -> tys |> List.tryPick (tryNiceEntityRefOfTyOption >> Option.bind computeCcuOfTyconRef)
 
         | Item.ArgName (_, _, Some (ArgumentContainer.Type eref)) -> computeCcuOfTyconRef eref
 
@@ -425,6 +428,7 @@ module internal SymbolHelpers =
         | Item.UnqualifiedType(erefs) -> erefs |> List.tryPick computeCcuOfTyconRef 
 
         | Item.SetterArg (_, item) -> ccuOfItem g item
+        | Item.AnonRecdField (info, _, _, _) -> Some info.Assembly
         | Item.TypeVar _  -> None
         | _ -> None
 
@@ -499,7 +503,14 @@ module internal SymbolHelpers =
         let ccuFileName = libFileOfEntityRef tcref
         let v = vref.Deref
         if v.XmlDocSig = "" && v.HasDeclaringEntity then
-            v.XmlDocSig <- XmlDocSigOfVal g (buildAccessPath vref.TopValDeclaringEntity.CompilationPathOpt) v
+            let ap = buildAccessPath vref.TopValDeclaringEntity.CompilationPathOpt
+            let path =
+                if vref.TopValDeclaringEntity.IsModule then
+                    let sep = if ap.Length > 0 then "." else ""
+                    ap + sep + vref.TopValDeclaringEntity.CompiledName
+                else
+                    ap
+            v.XmlDocSig <- XmlDocSigOfVal g path v
         Some (ccuFileName, v.XmlDocSig)                
 
     let GetXmlDocSigOfRecdFieldInfo (rfinfo:RecdFieldInfo) = 
@@ -704,8 +715,12 @@ module internal SymbolHelpers =
             // In this case just bail out and assume items are not equal
             protectAssemblyExploration false (fun () -> 
               let equalHeadTypes(ty1, ty2) =
-                  if isAppTy g ty1 && isAppTy g ty2 then tyconRefEq g (tcrefOfAppTy g ty1) (tcrefOfAppTy g ty2) 
-                  else typeEquiv g ty1 ty2
+                  match tryDestAppTy g ty1 with
+                  | ValueSome tcref1 ->
+                    match tryDestAppTy g ty2 with
+                    | ValueSome tcref2 -> tyconRefEq g tcref1 tcref2
+                    | _ -> typeEquiv g ty1 ty2
+                  | _ -> typeEquiv g ty1 ty2
 
               ItemsAreEffectivelyEqual g item1 item2 || 
 
@@ -743,6 +758,8 @@ module internal SymbolHelpers =
                   List.zip pi1s pi2s |> List.forall(fun (pi1, pi2) -> PropInfo.PropInfosUseIdenticalDefinitions pi1 pi2)
               | Item.Event(evt1), Item.Event(evt2) -> 
                   EventInfo.EventInfosUseIdenticalDefintions evt1 evt2
+              | Item.AnonRecdField(anon1, _, i1, _), Item.AnonRecdField(anon2, _, i2, _) ->
+                 Tastops.anonInfoEquiv anon1 anon2 && i1 = i2
               | Item.CtorGroup(_, meths1), Item.CtorGroup(_, meths2) -> 
                   List.zip meths1 meths2 
                   |> List.forall (fun (minfo1, minfo2) -> MethInfo.MethInfosUseIdenticalDefinitions minfo1 minfo2)
@@ -759,8 +776,9 @@ module internal SymbolHelpers =
             protectAssemblyExploration 1027 (fun () -> 
               match item with 
               | ItemWhereTypIsPreferred ty -> 
-                  if isAppTy g ty then hash (tcrefOfAppTy g ty).LogicalName
-                  else 1010
+                  match tryDestAppTy g ty with
+                  | ValueSome tcref -> hash (tcref).LogicalName
+                  | _ -> 1010
               | Item.ILField(ILFieldInfo(_, fld)) -> 
                   System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode fld // hash on the object identity of the AbstractIL metadata blob for the field
               | Item.TypeVar (nm, _tp) -> hash nm
@@ -775,6 +793,7 @@ module internal SymbolHelpers =
               | Item.ExnCase(tcref) -> hash tcref.LogicalName
               | Item.UnionCase(UnionCaseInfo(_, UCRef(tcref, n)), _) -> hash(tcref.Stamp, n)
               | Item.RecdField(RecdFieldInfo(_, RFRef(tcref, n))) -> hash(tcref.Stamp, n)
+              | Item.AnonRecdField(anon, _, i, _) -> hash anon.SortedNames.[i]
               | Item.Event evt -> evt.ComputeHashCode()
               | Item.Property(_name, pis) -> hash (pis |> List.map (fun pi -> pi.ComputeHashCode()))
               | Item.UnqualifiedType(tcref :: _) -> hash tcref.LogicalName
@@ -818,16 +837,16 @@ module internal SymbolHelpers =
         protectAssemblyExploration true (fun () -> 
          match item with 
          | Item.Types(it, [ty]) -> 
+             isAppTy g ty &&
              g.suppressed_types 
              |> List.exists (fun supp -> 
-                if isAppTy g ty && isAppTy g (generalizedTyconRef supp) then 
-                  // check if they are the same logical type (after removing all abbreviations)
-                  let tcr1 = tcrefOfAppTy g ty
-                  let tcr2 = tcrefOfAppTy g (generalizedTyconRef supp) 
-                  tyconRefEq g tcr1 tcr2 && 
-                  // check the display name is precisely the one we're suppressing
-                  it = supp.DisplayName
-                else false) 
+                let generalizedSupp = generalizedTyconRef supp
+                // check the display name is precisely the one we're suppressing
+                isAppTy g generalizedSupp && it = supp.DisplayName &&
+                // check if they are the same logical type (after removing all abbreviations)
+                let tcr1 = tcrefOfAppTy g ty
+                let tcr2 = tcrefOfAppTy g generalizedSupp
+                tyconRefEq g tcr1 tcr2) 
          | _ -> false)
 
     /// Filter types that are explicitly suppressed from the IntelliSense (such as uppercase "FSharpList", "Option", etc.)
@@ -855,6 +874,7 @@ module internal SymbolHelpers =
         | Item.ActivePatternResult(apinfo, _ty, idx, _) -> apinfo.Names.[idx]
         | Item.ActivePatternCase apref -> FullNameOfItem g (Item.Value apref.ActivePatternVal)  + "." + apref.Name 
         | Item.ExnCase ecref -> fullDisplayTextOfExnRef ecref 
+        | Item.AnonRecdField(anon, _argTys, i, _) -> anon.SortedNames.[i]
         | Item.RecdField rfinfo -> fullDisplayTextOfRecdFieldRef  rfinfo.RecdFieldRef
         | Item.NewDef id -> id.idText
         | Item.ILField finfo -> bufs (fun os -> NicePrint.outputILTypeRef denv os finfo.ILTypeRef; bprintf os ".%s" finfo.FieldName)
@@ -865,11 +885,11 @@ module internal SymbolHelpers =
         | Item.MethodGroup(_, _, Some minfo) -> bufs (fun os -> NicePrint.outputTyconRef denv os minfo.DeclaringTyconRef; bprintf os ".%s" minfo.DisplayName)        
         | Item.MethodGroup(_, minfo :: _, _) -> bufs (fun os -> NicePrint.outputTyconRef denv os minfo.DeclaringTyconRef; bprintf os ".%s" minfo.DisplayName)        
         | Item.UnqualifiedType (tcref :: _) -> bufs (fun os -> NicePrint.outputTyconRef denv os tcref)
-        | Item.FakeInterfaceCtor typ 
-        | Item.DelegateCtor typ 
-        | Item.Types(_, typ:: _) -> 
-            match tryDestAppTy g typ with
-            | Some tcref -> bufs (fun os -> NicePrint.outputTyconRef denv os tcref)
+        | Item.FakeInterfaceCtor ty 
+        | Item.DelegateCtor ty 
+        | Item.Types(_, ty:: _) -> 
+            match tryDestAppTy g ty with
+            | ValueSome tcref -> bufs (fun os -> NicePrint.outputTyconRef denv os tcref)
             | _ -> ""
         | Item.ModuleOrNamespaces((modref :: _) as modrefs) -> 
             let definiteNamespace = modrefs |> List.forall (fun modref -> modref.IsNamespace)
@@ -959,7 +979,8 @@ module internal SymbolHelpers =
             let g = infoReader.g
             let amap = infoReader.amap
             match item with
-            | Item.Types(_, ((TType_app(tcref, _)):: _)) -> 
+            | Item.Types(_, ((TType_app(tcref, _)):: _))
+            | Item.UnqualifiedType(tcref :: _) ->
                 let ty = generalizedTyconRef tcref
                 Infos.ExistsHeadTypeInEntireHierarchy g amap range0 ty g.tcref_System_Attribute
             | _ -> false
@@ -1126,9 +1147,9 @@ module internal SymbolHelpers =
         //     type IFoo = abstract F : int
         //     type II = IFoo  // remove 'type II = ' and quickly hover over IFoo before it gets squiggled for 'invalid use of interface type'
         // and in that case we'll just show the interface type name.
-        | Item.FakeInterfaceCtor typ ->
-           let typ, _ = PrettyTypes.PrettifyType g typ
-           let layout = NicePrint.layoutTyconRef denv (tcrefOfAppTy g typ)
+        | Item.FakeInterfaceCtor ty ->
+           let ty, _ = PrettyTypes.PrettifyType g ty
+           let layout = NicePrint.layoutTyconRef denv (tcrefOfAppTy g ty)
            FSharpStructuredToolTipElement.Single(layout, xml)
         
         // The 'fake' representation of constructors of .NET delegate types
@@ -1170,7 +1191,7 @@ module internal SymbolHelpers =
                     ([], modrefs) 
                     ||> Seq.fold (fun st modref -> 
                         match fullDisplayTextOfParentOfModRef modref with 
-                        | Some(txt) -> txt::st 
+                        | ValueSome txt -> txt::st 
                         | _ -> st) 
                     |> Seq.mapi (fun i x -> i, x) 
                     |> Seq.toList
@@ -1191,6 +1212,17 @@ module internal SymbolHelpers =
             else
                 FSharpStructuredToolTipElement.Single (layout, xml)
 
+        | Item.AnonRecdField(anon, argTys, i, _) -> 
+            let argTy = argTys.[i]
+            let nm = anon.SortedNames.[i]
+            let argTy, _ = PrettyTypes.PrettifyType g argTy
+            let layout =
+                wordL (tagText (FSComp.SR.typeInfoAnonRecdField())) ^^
+                wordL (tagRecordField nm) ^^
+                RightL.colon ^^
+                NicePrint.layoutType denv argTy
+            FSharpStructuredToolTipElement.Single (layout, FSharpXmlDoc.None)
+            
         // Named parameters
         | Item.ArgName (id, argTy, _) -> 
             let argTy, _ = PrettyTypes.PrettifyType g argTy
@@ -1309,6 +1341,8 @@ module internal SymbolHelpers =
 
         | Item.RecdField rfi -> 
             (rfi.TyconRef |> ticksAndArgCountTextOfTyconRef)+"."+rfi.Name |> Some
+        
+        | Item.AnonRecdField _ -> None 
         
         | Item.ILField finfo ->   
              match finfo with 

@@ -1282,8 +1282,9 @@ type IncrementalBuilder(tcGlobals, frameworkTcImports, nonFrameworkAssemblyInput
 
             result, sourceRange, filename, errorLogger.GetErrors ()
         with exn -> 
-            System.Diagnostics.Debug.Assert(false, sprintf "unexpected failure in IncrementalFSharpBuild.Parse\nerror = %s" (exn.ToString()))
-            failwith "last chance failure"  
+            let msg = sprintf "unexpected failure in IncrementalFSharpBuild.Parse\nerror = %s" (exn.ToString())
+            System.Diagnostics.Debug.Assert(false, msg)
+            failwith msg
                 
         
     /// This is a build task function that gets placed into the build rules as the computation for a Vector.Stamp
@@ -1745,7 +1746,7 @@ type IncrementalBuilder(tcGlobals, frameworkTcImports, nonFrameworkAssemblyInput
             let tcConfigB, sourceFilesNew = 
 
                 let getSwitchValue switchstring =
-                    match commandLineArgs |> Seq.tryFindIndex(fun s -> s.StartsWith(switchstring)) with
+                    match commandLineArgs |> Seq.tryFindIndex(fun s -> s.StartsWithOrdinal(switchstring)) with
                     | Some idx -> Some(commandLineArgs.[idx].Substring(switchstring.Length))
                     | _ -> None
 

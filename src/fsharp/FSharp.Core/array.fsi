@@ -12,7 +12,7 @@ namespace Microsoft.FSharp.Collections
     [<RequireQualifiedAccess>]
     module Array = 
 
-        /// <summary>Builds a new array that contains the cartesian product of the two input arrays.</summary>
+        /// <summary>Returns a new array that contains all pairings of elements from the first and second arrays.</summary>
         /// <param name="array1">The first input array.</param>
         /// <param name="array2">The second input array.</param>
         /// <exception cref="System.ArgumentNullException">Thrown when either of the input arrays is null.</exception>
@@ -242,6 +242,16 @@ namespace Microsoft.FSharp.Collections
         /// <exception cref="System.ArgumentException">Thrown when the input does not have precisely one element.</exception>
         [<CompiledName("ExactlyOne")>]
         val exactlyOne: array:'T[] -> 'T
+
+        /// <summary>Returns the only element of the array or <c>None</c> if array is empty or contains more than one element.</summary>
+        ///
+        /// <param name="array">The input array.</param>
+        ///
+        /// <returns>The only element of the array or None.</returns>
+        ///
+        /// <exception cref="System.ArgumentNullException">Thrown when the input array is null.</exception>
+        [<CompiledName("TryExactlyOne")>]
+        val tryExactlyOne: array:'T[] -> 'T option
 
         /// <summary>Returns a new list with the distinct elements of the input array which do not appear in the itemsToExclude sequence,
         /// using generic hash and equality comparisons to compare values.</summary>
